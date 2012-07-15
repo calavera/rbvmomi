@@ -91,5 +91,6 @@ Gem::Specification.new do |s|
   s.add_dependency(%q<builder>, [">= 0"])
   s.add_dependency(%q<trollop>, [">= 0"])
   s.add_dependency('excon')
+  s.add_dependency('progressbar')
 end
 

@@ -1,4 +1,6 @@
 class RbVmomi::VIM::OvfManager
+  require 'uri'
+  require 'open-uri'
 
   # Deploy an OVF.
   #
@@ -52,38 +54,20 @@ class RbVmomi::VIM::OvfManager
     raise nfcLease.error if nfcLease.state == "error"
     begin
       nfcLease.HttpNfcLeaseProgress(:percent => 5)
-      progress = 5.0
+
       result.fileItem.each do |fileItem|
         deviceUrl = nfcLease.info.deviceUrl.find{|x| x.importKey == fileItem.deviceId}
         if !deviceUrl
           raise "Couldn't find deviceURL for device '#{fileItem.deviceId}'"
         end
 
-        keepAliveThread = Thread.new do
-          while true
-            sleep 2 * 60
-            nfcLease.HttpNfcLeaseProgress(:percent => progress.to_i)
-          end
+        device_href = deviceUrl.url.gsub("*", opts[:host].config.network.vnic[0].spec.ip.ipAddress)
+        ovf_uri = opts[:uri].to_s
+
+        stream_disk(ovf_uri, fileItem.path, device_href) do |uploaded, total|
+          progress = 5 + ((uploaded * 90) / total)
+          nfcLease.HttpNfcLeaseProgress(:percent => progress.to_i)
         end
-
-        href = deviceUrl.url.gsub("*", opts[:host].config.network.vnic[0].spec.ip.ipAddress)
-
-        # fileItem.create actually means that the object has been already
-        # created
-        ovfFilename = opts[:uri].to_s
-        file_body = file_body(ovfFilename, fileItem.path)
-
-        unless fileItem.create
-          Excon.post(URI::escape(href), :body => file_body)
-        else
-          Excon.put(URI::escape(href), :body => file_body)
-        end
-
-        keepAliveThread.kill
-        keepAliveThread.join
-
-        progress += (90.0 / result.fileItem.length)
-        nfcLease.HttpNfcLeaseProgress(:percent => progress.to_i)
       end
 
       nfcLease.HttpNfcLeaseProgress(:percent => 100)
@@ -96,20 +80,45 @@ class RbVmomi::VIM::OvfManager
     raise
   end
 
-  def file_body(ovf_uri, path)
-    require 'uri'
+  def stream_disk(ovf_uri, disk_path, target_uri, &block)
     uri = URI.parse(ovf_uri)
+    target_uri = URI.escape(target_uri)
+
+    pbar = ProgressBar.new "Progress", 100
     if uri.scheme.nil?
       # local path
-      File.open(File.expand_path(path, File.dirname(ovf_uri)))
+      file = File.open(File.expand_path(disk_path, File.dirname(ovf_uri)))
+
+      total_bytes = file.size
+      uploaded_bytes = 0
+      chunker = lambda do
+        uploaded_bytes += Excon::CHUNK_SIZE
+
+        pbar.set ((uploaded_bytes * 100) / total_bytes).to_i
+
+        block.call(uploaded_bytes, total_bytes) if block_given?
+        file.read(Excon::CHUNK_SIZE).to_s
+      end
+
+      Excon.post(target_uri, :request_block => chunker)
+
+      file.close
     else
       # same hack that we had before
       tmp = ovf_uri.split(/\//)
       tmp.pop
-      tmp << path
-      tmp.join("/")
+      tmp << disk_path
+      disk_uri = tmp.join("/")
 
-      Excon.get(tmp).body
+      Excon.pipe(disk_uri, target_uri) do |chunk, remaining_bytes, total_bytes|
+        uploaded_bytes = total_bytes - remaining_bytes
+
+        pbar.set ((uploaded_bytes * 100) / total_bytes).to_i
+
+        block.call(uploaded_bytes, total_bytes) if block_given?
+      end
     end
+
+    pbar.finish
   end
 end

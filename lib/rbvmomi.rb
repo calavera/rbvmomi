@@ -2,6 +2,8 @@
 module RbVmomi
 
 require 'excon'
+require 'progressbar'
+
 
 
 # @private
