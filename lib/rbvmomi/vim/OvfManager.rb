@@ -14,7 +14,7 @@ class RbVmomi::VIM::OvfManager
   # @option opts [String]             :diskProvisioning (thin) Disk provisioning mode.
   # @option opts [Hash]               :networkMappings Network mappings.
   # @option opts [Hash]               :propertyMappings Property mappings.
-  def deployOVF opts
+  def deployOVF(opts, &block)
     opts = { :networkMappings => {},
              :propertyMappings => {},
              :diskProvisioning => :thin }.merge opts
@@ -55,6 +55,8 @@ class RbVmomi::VIM::OvfManager
     begin
       nfcLease.HttpNfcLeaseProgress(:percent => 5)
 
+      block.call(5) if block_given?
+
       result.fileItem.each do |fileItem|
         deviceUrl = nfcLease.info.deviceUrl.find{|x| x.importKey == fileItem.deviceId}
         if !deviceUrl
@@ -67,10 +69,14 @@ class RbVmomi::VIM::OvfManager
         stream_disk(ovf_uri, fileItem.path, device_href) do |uploaded, total|
           progress = 5 + ((uploaded * 90) / total)
           nfcLease.HttpNfcLeaseProgress(:percent => progress.to_i)
+
+          block.call(progress.to_i) if block_given?
         end
       end
 
       nfcLease.HttpNfcLeaseProgress(:percent => 100)
+      block.call(100) if block_given?
+
       vm = nfcLease.info.entity
       nfcLease.HttpNfcLeaseComplete
       vm
